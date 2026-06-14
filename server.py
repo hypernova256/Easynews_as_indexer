@@ -285,6 +285,53 @@ def _parse_duration_seconds(raw: Any) -> Optional[int]:
     return None
 
 
+_SIZE_UNITS = {
+    "b": 1,
+    "kb": 1000,
+    "kib": 1024,
+    "mb": 1000 ** 2,
+    "mib": 1024 ** 2,
+    "gb": 1000 ** 3,
+    "gib": 1024 ** 3,
+    "tb": 1000 ** 4,
+    "tib": 1024 ** 4,
+}
+_SIZE_RE = re.compile(r"([\d.,]+)\s*([a-zA-Z]+)?")
+
+
+def _parse_size_bytes(raw: Any) -> int:
+    """
+    Coerce an Easynews size value to bytes.
+
+    Easynews returns ``rawSize`` as an integer byte count but ``size`` as a
+    human-readable string such as ``"1.4 GB"``. The previous code ran the
+    string straight through ``int()``, which raised and left the size at 0,
+    so the 100MB minimum filter silently dropped every real result.
+    """
+    if raw is None:
+        return 0
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, (int, float)):
+        return int(raw) if raw > 0 else 0
+    text = str(raw).strip()
+    if not text:
+        return 0
+    if text.isdigit():
+        return int(text)
+    match = _SIZE_RE.match(text)
+    if not match:
+        return 0
+    number = match.group(1).replace(",", "")
+    try:
+        value = float(number)
+    except ValueError:
+        return 0
+    unit = (match.group(2) or "b").lower()
+    multiplier = _SIZE_UNITS.get(unit, 1)
+    return int(value * multiplier)
+
+
 def _as_int(value: Optional[str]) -> Optional[int]:
     if value is None:
         return None
@@ -441,7 +488,11 @@ def _detect_anime(title: str) -> bool:
     return has_episode
 
 
-def _detect_category(title: str, metadata: Dict[str, Optional[Any]]) -> int:
+def _detect_category(
+    title: str,
+    metadata: Dict[str, Optional[Any]],
+    search_type: Optional[str] = None,
+) -> int:
     """
     Detect Newznab category based on filename and extracted metadata.
 
@@ -452,22 +503,22 @@ def _detect_category(title: str, metadata: Dict[str, Optional[Any]]) -> int:
     4. Resolution subcategories: 720p+ = HD, 2160p/4K/UHD = UHD (TV/Movies only)
     5. Default to generic categories if uncertain
 
+    When ``search_type`` is provided (``"tvsearch"`` or ``"movie"``) the result is
+    constrained to that media type's category family. Sonarr/Radarr reject any
+    item whose category is outside the categories they searched, so a TV search
+    must never return a Movies category (and vice versa) even when the filename
+    lacks a clean SxxExx marker (season packs, date- or absolute-numbered
+    episodes, etc.).
+
     Args:
         title: The filename/title to analyze
         metadata: Dict with season, episode, year, quality keys
+        search_type: Optional Newznab ``t`` value to pin the category family
 
     Returns:
         Newznab category ID (int)
     """
-    # Check for anime FIRST (priority detection)
-    if _detect_anime(title):
-        return CATEGORY_ANIME  # 5070 - No quality subcategories
-
-    season = metadata.get("season")
-    episode = metadata.get("episode")
     quality = metadata.get("quality")
-    year = metadata.get("year")
-
     quality_lower = (quality or "").lower()
     is_uhd = False
     is_hd = False
@@ -480,6 +531,38 @@ def _detect_category(title: str, metadata: Dict[str, Optional[Any]]) -> int:
         elif "720" in quality_lower or "1080" in quality_lower:
             is_hd = True
 
+    def _tv_category() -> int:
+        if _detect_anime(title):
+            return CATEGORY_ANIME  # 5070 - No quality subcategories
+        if is_uhd:
+            return CATEGORY_TV_UHD  # 5040
+        if is_hd:
+            return CATEGORY_TV_HD  # 5030
+        return CATEGORY_TV  # 5000
+
+    def _movie_category() -> int:
+        if is_uhd:
+            return CATEGORY_MOVIES_UHD  # 2040
+        if is_hd:
+            return CATEGORY_MOVIES_HD  # 2030
+        return CATEGORY_MOVIES  # 2000
+
+    # A TV/movie search pins the media type: results must land in that family so
+    # the consumer (Sonarr/Radarr) doesn't discard them as wrong-category.
+    if search_type == "tvsearch":
+        return _tv_category()
+    if search_type == "movie":
+        return _movie_category()
+
+    # Generic search: infer the media type from the title/metadata.
+    # Check for anime FIRST (priority detection)
+    if _detect_anime(title):
+        return CATEGORY_ANIME  # 5070 - No quality subcategories
+
+    season = metadata.get("season")
+    episode = metadata.get("episode")
+    year = metadata.get("year")
+
     has_tv_pattern = season is not None or episode is not None
 
     if not has_tv_pattern:
@@ -487,21 +570,11 @@ def _detect_category(title: str, metadata: Dict[str, Optional[Any]]) -> int:
             has_tv_pattern = True
 
     if has_tv_pattern:
-        if is_uhd:
-            return CATEGORY_TV_UHD  # 5040
-        elif is_hd:
-            return CATEGORY_TV_HD  # 5030
-        else:
-            return CATEGORY_TV  # 5000
+        return _tv_category()
 
     # Movies typically have a year but no season/episode
     if year or (not has_tv_pattern):
-        if is_uhd:
-            return CATEGORY_MOVIES_UHD  # 2040
-        elif is_hd:
-            return CATEGORY_MOVIES_HD  # 2030
-        else:
-            return CATEGORY_MOVIES  # 2000
+        return _movie_category()
 
     # Default fallback to generic Movies
     return CATEGORY_MOVIES  # 2000
@@ -556,6 +629,8 @@ def filter_and_map(
                 subject = it[6]
                 filename_no_ext = it[10]
                 ext = it[11]
+            if len(it) > 4:
+                size = it[4]
             if len(it) > 7:
                 poster = it[7]
             if len(it) > 8:
@@ -567,7 +642,16 @@ def filter_and_map(
             subject = it.get("subject") or it.get("6")
             filename_no_ext = it.get("filename") or it.get("10")
             ext = it.get("ext") or it.get("11")
-            size = it.get("size", 0)
+            # Easynews exposes a numeric byte count as ``rawSize``; ``size`` is a
+            # human-readable string like "1.4 GB". Prefer the byte count.
+            size = (
+                it.get("rawSize")
+                or it.get("rawsize")
+                or it.get("bytes")
+                or it.get("size")
+                or it.get("4")
+                or 0
+            )
             poster = it.get("poster") or it.get("7")
             posted_raw = it.get("timestamp") or it.get("ts") or it.get("dtime") or it.get("date") or it.get("12")
             sig = it.get("sig")
@@ -583,15 +667,16 @@ def filter_and_map(
         ext = ext or ""
         if extension_field and not ext:
             ext = extension_field
+        # Normalize extension to always carry a leading dot before validation.
+        if ext and not ext.startswith("."):
+            ext = f".{ext}"
 
-        # Try to use numeric size if present; otherwise skip (can't verify <100MB rule)
-        if not isinstance(size, int):
-            try:
-                size = int(size)
-            except Exception:
-                size = 0
+        # Easynews sizes arrive as bytes (rawSize) or human-readable strings.
+        size = _parse_size_bytes(size)
 
-        if size < min_bytes:
+        # Only reject when the size is known and below the minimum. Items with an
+        # unknown size (0) are kept so a missing field can't wipe out every result.
+        if size and size < min_bytes:
             continue
 
         duration_seconds = _parse_duration_seconds(duration_raw)
@@ -876,6 +961,7 @@ def api():
             f"<description>{xml_escape(chan_title)}</description>"
             f"<link>{request.url_root.rstrip('/')}/api</link>"
             f"<pubDate>{channel_pub}</pubDate>"
+            f'<newznab:response offset="{offset}" total="{len(items)}"/>'
         )
 
         body_parts: List[str] = []
@@ -904,7 +990,7 @@ def api():
                 "year": year,
                 "quality": quality,
             }
-            category_id = _detect_category(title_text, title_metadata)
+            category_id = _detect_category(title_text, title_metadata, search_type=t)
 
             attr_parts = [
                 f'<newznab:attr name="size" value="{size}"/>',
