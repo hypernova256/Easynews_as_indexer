@@ -83,6 +83,19 @@ def xml_escape(s: str) -> str:
     )
 
 
+def _newznab_error(code: int, description: str) -> Response:
+    """
+    Build a Newznab error response. Returned with HTTP 200 and the documented
+    ``<error code=.. description=..>`` body so Prowlarr/Sonarr report a clean
+    indexer error instead of choking on a raw 500.
+    """
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'<error code="{code}" description="{xml_escape(description)}"/>'
+    )
+    return Response(xml, mimetype="application/xml")
+
+
 def encode_id(item: dict) -> str:
     # Pack info needed to build NZB for a single selection and preserve title for filename
     payload = {
@@ -931,15 +944,26 @@ def api():
                     }
                 ]
         else:
-            c = client()
-            # aim for maximum results per page
-            data = c.search(
-                query=q,
-                file_type="VIDEO",
-                per_page=250,
-                sort_field="relevance",
-                sort_dir="-",
-            )
+            # Surface upstream Easynews problems as a Newznab <error> response
+            # rather than a bare HTTP 500, which Prowlarr/Sonarr handle poorly.
+            try:
+                c = client()
+                # aim for maximum results per page
+                data = c.search(
+                    query=q,
+                    file_type="VIDEO",
+                    per_page=250,
+                    sort_field="relevance",
+                    sort_dir="-",
+                )
+            except RuntimeError as e:
+                # Missing/blank credentials configuration.
+                return _newznab_error(100, str(e))
+            except EasynewsError as e:
+                code = 100 if "unauthor" in str(e).lower() else 900
+                return _newznab_error(code, str(e))
+            except requests.exceptions.RequestException as e:
+                return _newznab_error(900, f"Upstream network error: {e}")
             if fallback_query:
                 items = filter_and_map(data, min_bytes=min_bytes)
             else:
