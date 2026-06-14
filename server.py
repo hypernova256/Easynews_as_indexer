@@ -252,12 +252,17 @@ _SANITIZE_SYMBOLS_RE = re.compile(r"[\.\-_:\s]+")
 _NON_ALNUM_RE = re.compile(r"[^\w\sÀ-ÿ]")
 
 # Newznab category constants
+# Newznab standard category IDs. NB: 5030/2030 are SD, 5040/2040 are HD and
+# 5045/2045 are UHD — getting these wrong makes Sonarr/Radarr label (and then
+# reject) releases by the wrong quality tier.
 CATEGORY_MOVIES = 2000
-CATEGORY_MOVIES_HD = 2030
-CATEGORY_MOVIES_UHD = 2040
+CATEGORY_MOVIES_SD = 2030
+CATEGORY_MOVIES_HD = 2040
+CATEGORY_MOVIES_UHD = 2045
 CATEGORY_TV = 5000
-CATEGORY_TV_HD = 5030
-CATEGORY_TV_UHD = 5040
+CATEGORY_TV_SD = 5030
+CATEGORY_TV_HD = 5040
+CATEGORY_TV_UHD = 5045
 CATEGORY_ANIME = 5070  # Anime as TV subcategory
 CATEGORY_OTHER = 7000
 
@@ -548,16 +553,16 @@ def _detect_category(
         if _detect_anime(title):
             return CATEGORY_ANIME  # 5070 - No quality subcategories
         if is_uhd:
-            return CATEGORY_TV_UHD  # 5040
+            return CATEGORY_TV_UHD  # 5045
         if is_hd:
-            return CATEGORY_TV_HD  # 5030
+            return CATEGORY_TV_HD  # 5040
         return CATEGORY_TV  # 5000
 
     def _movie_category() -> int:
         if is_uhd:
-            return CATEGORY_MOVIES_UHD  # 2040
+            return CATEGORY_MOVIES_UHD  # 2045
         if is_hd:
-            return CATEGORY_MOVIES_HD  # 2030
+            return CATEGORY_MOVIES_HD  # 2040
         return CATEGORY_MOVIES  # 2000
 
     # A TV/movie search pins the media type: results must land in that family so
@@ -790,12 +795,14 @@ def api():
             "</searching>"
             "<categories>"
             '<category id="2000" name="Movies">'
-            '<subcat id="2030" name="Movies/HD"/>'
-            '<subcat id="2040" name="Movies/UHD"/>'
+            '<subcat id="2030" name="Movies/SD"/>'
+            '<subcat id="2040" name="Movies/HD"/>'
+            '<subcat id="2045" name="Movies/UHD"/>'
             "</category>"
             '<category id="5000" name="TV">'
-            '<subcat id="5030" name="TV/HD"/>'
-            '<subcat id="5040" name="TV/UHD"/>'
+            '<subcat id="5030" name="TV/SD"/>'
+            '<subcat id="5040" name="TV/HD"/>'
+            '<subcat id="5045" name="TV/UHD"/>'
             '<subcat id="5070" name="TV/Anime"/>'
             "</category>"
             '<category id="7000" name="Other"/>'
@@ -1024,10 +1031,20 @@ def api():
                 "quality": quality,
             }
             category_id = _detect_category(title_text, title_metadata, search_type=t)
+            # Emit the parent category (e.g. 5000) alongside the subcategory
+            # (e.g. 5040) the way standard Newznab indexers do, so a consumer
+            # configured for either the parent or the specific tier matches.
+            parent_category = (category_id // 1000) * 1000
+            category_ids = [category_id]
+            if parent_category != category_id:
+                category_ids.insert(0, parent_category)
 
-            attr_parts = [
-                f'<newznab:attr name="size" value="{size}"/>',
-                f'<newznab:attr name="category" value="{category_id}"/>',
+            attr_parts = [f'<newznab:attr name="size" value="{size}"/>']
+            attr_parts += [
+                f'<newznab:attr name="category" value="{cid}"/>'
+                for cid in category_ids
+            ]
+            attr_parts += [
                 f'<newznab:attr name="usenetdate" value="{posted_str}"/>',
                 f'<newznab:attr name="posted" value="{posted_epoch}"/>',
             ]
@@ -1054,12 +1071,13 @@ def api():
             if episode:
                 attr_parts.append(f'<newznab:attr name="episode" value="{episode}"/>')
             attr_xml = "".join(attr_parts)
+            category_xml = "".join(f"<category>{cid}</category>" for cid in category_ids)
             item_xml = (
                 f"<item>"
                 f"<title>{title}</title>"
                 f'<guid isPermaLink="false">{guid}</guid>'
                 f"<link>{safe_link}</link>"
-                f"<category>{category_id}</category>"
+                f"{category_xml}"
                 f"<pubDate>{posted_str}</pubDate>"
                 f"{attr_xml}"
                 f'<enclosure url="{safe_link}" length="{size}" type="application/x-nzb"/>'
