@@ -841,8 +841,15 @@ def api():
             else:
                 q = "matrix"  # Movie fallback
             fallback_query = True
-        query_tokens = _tokenize(raw_query)
-        query_meta = _extract_release_markers(raw_query)
+        # Local title matching keys off the base title only. The constructed
+        # query (q) still carries SxxExx/year for the upstream Easynews search,
+        # but using it here forced the filename to contain that exact string,
+        # which discarded valid alternate notations (e.g. "1x01") and season
+        # packs. Season/episode/year matching is handled by query_meta below,
+        # whose regex already understands both "S01E01" and "1x01".
+        match_phrase = base_query or raw_query
+        query_tokens = _tokenize(match_phrase)
+        query_meta = _extract_release_markers(match_phrase)
         if year_int:
             query_meta["year"] = year_int
         if season_int is not None:
@@ -858,7 +865,7 @@ def api():
                 "no",
                 "off",
             }
-        strict_phrase = _sanitize_phrase(raw_query) if strict_requested else None
+        strict_phrase = _sanitize_phrase(match_phrase) if strict_requested else None
         limit = int(request.args.get("limit", "100"))
         offset = int(request.args.get("offset", "0"))
         min_size_param = request.args.get("minsize")
@@ -945,6 +952,8 @@ def api():
                     strict_match=strict_requested,
                 )
 
+        # Total matched before pagination, for the newznab:response element.
+        total_results = len(items)
         # Trim by limit (handles fallback and real queries)
         items = items[offset : offset + limit]
 
@@ -961,7 +970,7 @@ def api():
             f"<description>{xml_escape(chan_title)}</description>"
             f"<link>{request.url_root.rstrip('/')}/api</link>"
             f"<pubDate>{channel_pub}</pubDate>"
-            f'<newznab:response offset="{offset}" total="{len(items)}"/>'
+            f'<newznab:response offset="{offset}" total="{total_results}"/>'
         )
 
         body_parts: List[str] = []
