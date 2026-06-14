@@ -264,7 +264,7 @@ CATEGORY_TV_SD = 5030
 CATEGORY_TV_HD = 5040
 CATEGORY_TV_UHD = 5045
 CATEGORY_ANIME = 5070  # Anime as TV subcategory
-CATEGORY_OTHER = 7000
+CATEGORY_OTHER = 8000
 
 
 def _parse_duration_seconds(raw: Any) -> Optional[int]:
@@ -795,17 +795,17 @@ def api():
             "</searching>"
             "<categories>"
             '<category id="2000" name="Movies">'
-            '<subcat id="2030" name="Movies/SD"/>'
-            '<subcat id="2040" name="Movies/HD"/>'
-            '<subcat id="2045" name="Movies/UHD"/>'
+            '<subcat id="2030" name="SD"/>'
+            '<subcat id="2040" name="HD"/>'
+            '<subcat id="2045" name="UHD"/>'
             "</category>"
             '<category id="5000" name="TV">'
-            '<subcat id="5030" name="TV/SD"/>'
-            '<subcat id="5040" name="TV/HD"/>'
-            '<subcat id="5045" name="TV/UHD"/>'
-            '<subcat id="5070" name="TV/Anime"/>'
+            '<subcat id="5030" name="SD"/>'
+            '<subcat id="5040" name="HD"/>'
+            '<subcat id="5045" name="UHD"/>'
+            '<subcat id="5070" name="Anime"/>'
             "</category>"
-            '<category id="7000" name="Other"/>'
+            '<category id="8000" name="Other"/>'
             "</categories>"
             "</caps>"
         )
