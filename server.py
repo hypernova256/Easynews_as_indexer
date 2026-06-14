@@ -598,6 +598,31 @@ def _detect_category(
     return CATEGORY_MOVIES  # 2000
 
 
+def _resolve_item_categories(
+    category_id: int, requested_cats: Optional[Set[int]] = None
+) -> List[int]:
+    """
+    Build the ordered list of Newznab categories to advertise for an item.
+
+    Always includes the parent family category (e.g. 5000) plus the specific
+    tier (e.g. 5040), the way standard indexers do. When the caller passed a
+    ``cat`` filter (Prowlarr/Sonarr always do) and none of our categories are
+    in it, append the requested categories from the same family so the item
+    still survives the consumer's category filter — this keeps results flowing
+    even if the consumer has a stale/narrow view of our capabilities.
+    """
+    parent = (category_id // 1000) * 1000
+    cats: List[int] = []
+    for c in (parent, category_id):
+        if c not in cats:
+            cats.append(c)
+    if requested_cats and not any(c in requested_cats for c in cats):
+        for c in sorted(requested_cats):
+            if (c // 1000) * 1000 == parent and c not in cats:
+                cats.append(c)
+    return cats
+
+
 def _matches_strict(title: str, strict_phrase: Optional[str]) -> bool:
     if not strict_phrase:
         return True
@@ -988,6 +1013,14 @@ def api():
         # Trim by limit (handles fallback and real queries)
         items = items[offset : offset + limit]
 
+        # Categories the caller (Prowlarr/Sonarr) asked for, used to keep each
+        # item within the consumer's category filter (see _resolve_item_categories).
+        requested_cats: Set[int] = set()
+        for c_str in cat_param.split(","):
+            c_str = c_str.strip()
+            if c_str.isdigit():
+                requested_cats.add(int(c_str))
+
         display_q = raw_query if raw_query else q
         chan_title = f"Results for {display_q}"
         now_dt = datetime.now(timezone.utc)
@@ -1032,12 +1065,9 @@ def api():
             }
             category_id = _detect_category(title_text, title_metadata, search_type=t)
             # Emit the parent category (e.g. 5000) alongside the subcategory
-            # (e.g. 5040) the way standard Newznab indexers do, so a consumer
-            # configured for either the parent or the specific tier matches.
-            parent_category = (category_id // 1000) * 1000
-            category_ids = [category_id]
-            if parent_category != category_id:
-                category_ids.insert(0, parent_category)
+            # (e.g. 5040) the way standard Newznab indexers do, plus any
+            # caller-requested categories from the same family (see resolver).
+            category_ids = _resolve_item_categories(category_id, requested_cats)
 
             attr_parts = [f'<newznab:attr name="size" value="{size}"/>']
             attr_parts += [
